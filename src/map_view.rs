@@ -5,6 +5,7 @@ live_design! {
     link widgets;
     use link::shaders::*;
     use link::widgets::*;
+    use link::theme::*;
 
     // Shader for rendering map tiles with UV offset/scale for parent tile fallback
     DrawMapTile = {{DrawMapTile}} {
@@ -24,7 +25,17 @@ live_design! {
         }
     }
 
-    pub GeoMapViewBase = {{GeoMapView}} {}
+    pub GeoMapViewBase = {{GeoMapView}} {
+        draw_scale_bg: {
+            color: #333333
+        }
+        draw_scale_text: {
+            color: #333333
+            text_style: <THEME_FONT_REGULAR> {
+                font_size: 10.0
+            }
+        }
+    }
 
     pub GeoMapView = <GeoMapViewBase> {
         width: Fill,
@@ -62,10 +73,21 @@ pub enum GeoMapViewAction {
 /// Tile size in pixels (standard OSM tile size)
 const TILE_SIZE: f64 = 256.0;
 
+/// Scale bar step values in meters (from 10m to 1000km)
+const SCALE_STEPS: &[f64] = &[
+    10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0,
+    10000.0, 20000.0, 50000.0, 100000.0, 200000.0, 500000.0, 1000000.0,
+];
+
 #[derive(Live, LiveHook, Widget)]
 pub struct GeoMapView {
     #[walk] walk: Walk,
     #[redraw] #[live] pub draw_tile: DrawMapTile,
+
+    // Scale bar drawing
+    #[live] draw_scale_bg: DrawColor,
+    #[live] draw_scale_text: DrawText,
+    #[live(true)] pub show_scale_bar: bool,
 
     // Map state (in geo coordinates)
     // Default to San Francisco at zoom 12
@@ -359,6 +381,25 @@ impl Widget for GeoMapView {
             }
         }
 
+        // Draw scale bar if enabled
+        if self.show_scale_bar {
+            let (bar_width, label) = self.calculate_scale_bar(100.0);
+            let margin = 10.0;
+            let bar_height = 4.0;
+            let bar_y = rect.pos.y + rect.size.y - margin - bar_height;
+            let bar_x = rect.pos.x + margin;
+
+            // Draw the scale bar background (dark line)
+            self.draw_scale_bg.draw_abs(cx, Rect {
+                pos: dvec2(bar_x, bar_y),
+                size: dvec2(bar_width, bar_height),
+            });
+
+            // Draw label above the bar
+            let text_y = bar_y - 14.0; // Position text above the bar
+            self.draw_scale_text.draw_abs(cx, dvec2(bar_x, text_y), &label);
+        }
+
         // End turtle and set area for hit detection
         cx.end_turtle_with_area(&mut self.draw_tile.draw_super.draw_vars.area);
 
@@ -429,6 +470,42 @@ impl GeoMapView {
             }
         }
         None
+    }
+
+    /// Calculate meters per pixel at the current zoom level and latitude
+    fn meters_per_pixel(&self) -> f64 {
+        // Earth circumference at equator = 40075016.686 meters
+        // World width in pixels = 256 * 2^zoom
+        // Adjust for latitude: multiply by cos(latitude)
+        let world_size_meters = 40075016.686;
+        let world_size_pixels = 256.0 * 2.0_f64.powf(self.zoom);
+        let meters_per_pixel_at_equator = world_size_meters / world_size_pixels;
+        meters_per_pixel_at_equator * self.center_lat.to_radians().cos()
+    }
+
+    /// Calculate the scale bar width and label for a given maximum width
+    fn calculate_scale_bar(&self, max_width: f64) -> (f64, String) {
+        let mpp = self.meters_per_pixel();
+        let max_meters = max_width * mpp;
+
+        // Find largest step that fits within max_width
+        let mut selected_meters = SCALE_STEPS[0];
+        for &step in SCALE_STEPS {
+            if step <= max_meters {
+                selected_meters = step;
+            } else {
+                break;
+            }
+        }
+
+        let bar_width = selected_meters / mpp;
+        let label = if selected_meters >= 1000.0 {
+            format!("{} km", (selected_meters / 1000.0) as i32)
+        } else {
+            format!("{} m", selected_meters as i32)
+        };
+
+        (bar_width, label)
     }
 
     /// Calculate flick velocity from position/time samples
