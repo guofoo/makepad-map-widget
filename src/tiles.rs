@@ -2,6 +2,8 @@ use makepad_widgets::*;
 use makepad_widgets::image_cache::ImageBuffer;
 use std::collections::HashMap;
 
+use crate::disk_cache;
+
 /// OpenStreetMap tile coordinates
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct TileCoord {
@@ -87,18 +89,32 @@ impl TileCache {
 
     /// Request a tile if not already cached or loading
     pub fn request_tile(&mut self, cx: &mut Cx, coord: TileCoord) {
-        // Check if already loaded or loading
+        // Check if already loaded or loading in memory
         if self.tiles.contains_key(&coord) {
             return;
         }
 
-        // Start loading
+        // Check disk cache first
+        if let Some(data) = disk_cache::load_tile(&coord) {
+            // Try to decode from disk cache
+            match ImageBuffer::from_png(&data) {
+                Ok(buffer) => {
+                    let texture: Texture = buffer.into_new_texture(cx);
+                    self.tiles.insert(coord, TileState::Loaded(texture));
+                    return; // Successfully loaded from disk
+                }
+                Err(_) => {
+                    // Corrupted cache file, will re-download
+                }
+            }
+        }
+
+        // Not in disk cache, fetch from network
         self.request_counter += 1;
         let request_id = LiveId::from_num(0, self.request_counter);
 
         let url = coord.tile_url(&self.tile_server);
         let mut request = HttpRequest::new(url, HttpMethod::GET);
-        // OSM requires a User-Agent header
         request.set_header("User-Agent".to_string(), "MakepadMap/0.1".to_string());
         cx.http_request(request_id, request);
 
@@ -120,9 +136,17 @@ impl TileCache {
         if let Some(coord) = self.pending_requests.remove(&request_id) {
             if response.status_code == 200 {
                 if let Some(body) = &response.body {
-                    // Try to decode the PNG
+                    // Try to decode the PNG first (validates it's a real PNG)
                     match ImageBuffer::from_png(body) {
                         Ok(buffer) => {
+                            // Save to disk cache only after successful decode
+                            disk_cache::save_tile(&coord, body);
+
+                            // Periodically check cache size (every 100 tiles saved)
+                            if self.request_counter % 100 == 0 {
+                                disk_cache::evict_if_needed();
+                            }
+
                             let texture: Texture = buffer.into_new_texture(cx);
                             self.tiles.insert(coord, TileState::Loaded(texture));
                             return true;
@@ -178,9 +202,10 @@ impl TileCache {
         tiles
     }
 
-    /// Clear all cached tiles
+    /// Clear all cached tiles (memory and disk)
     pub fn clear(&mut self) {
         self.tiles.clear();
         self.pending_requests.clear();
+        disk_cache::clear_cache();
     }
 }

@@ -11,7 +11,7 @@ https://github.com/user-attachments/assets/a9e39a1d-2712-41e2-b93c-7482c98fac5b
 - Pinch-to-zoom (mobile/touch)
 - Double-tap to zoom in
 - Configurable tile server (defaults to Carto Voyager)
-- Tile caching
+- Persistent disk caching (survives app restarts)
 - Event callbacks for taps, long presses, and region changes
 
 ## Installation
@@ -137,6 +137,34 @@ The widget uses [Carto Voyager](https://carto.com/basemaps/) tiles by default. T
 ```
 
 Note: Some tile providers require API keys. Check the provider's terms of service.
+
+## Tile Caching
+
+Map tiles are automatically cached to disk for offline viewing and faster loading:
+
+| Platform | Cache Location |
+|----------|----------------|
+| macOS | `~/Library/Caches/makepad-map/tiles/` |
+| Linux | `~/.cache/makepad-map/tiles/` |
+| Windows | `%LOCALAPPDATA%/makepad-map/cache/tiles/` |
+| iOS | `~/Library/Caches/makepad-map/tiles/` |
+| Android | `$CACHE_DIR/makepad-map/tiles/` |
+
+**Cache behavior:**
+- Tiles are saved after successful download
+- On request: checks memory cache, then disk cache, then network
+- Maximum cache size: 50MB (oldest tiles evicted automatically)
+- Cache persists across app restarts
+
+**Clear the cache programmatically:**
+
+```rust
+// This clears both memory and disk cache
+let map = self.ui.geo_map_view(id!(my_map));
+if let Some(mut inner) = map.borrow_mut() {
+    inner.tile_cache.clear();
+}
+```
 
 ## Running the Example
 

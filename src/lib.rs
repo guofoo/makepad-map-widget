@@ -1,6 +1,7 @@
 pub use makepad_widgets;
 pub use makepad_widgets::*;
 
+pub mod disk_cache;
 pub mod map_view;
 pub mod tiles;
 
