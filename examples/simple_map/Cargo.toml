@@ -1,0 +1,18 @@
+[package]
+name = "makepad-map-example-simple"
+version = "0.1.0"
+edition = "2021"
+description = "Simple map example for Makepad"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/app.rs"
+
+[[bin]]
+name = "makepad-map-example-simple"
+path = "src/main.rs"
+
+[dependencies]
+makepad-widgets = { path = "../../../makepad/widgets", version = "1.0.0" }
+makepad-map = { path = "../.." }

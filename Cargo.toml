@@ -1,0 +1,12 @@
+[package]
+name = "makepad-map"
+version = "0.1.0"
+edition = "2021"
+description = "Map widget for Makepad"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+makepad-widgets = { path = "../makepad/widgets", version = "1.0.0" }
+
+[workspace]
+members = ["examples/simple_map"]
