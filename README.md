@@ -2,6 +2,8 @@
 
 A cross-platform map widget for the [Makepad](https://github.com/makepad/makepad) UI framework. Displays interactive slippy maps with pan, zoom, and touch support on desktop and mobile platforms.
 
+https://github.com/user-attachments/assets/a9e39a1d-2712-41e2-b93c-7482c98fac5b
+
 ## Features
 
 - Interactive map with pan and zoom
