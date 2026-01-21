@@ -35,6 +35,15 @@ live_design! {
                 font_size: 10.0
             }
         }
+        draw_attribution_bg: {
+            color: #ffffffcc
+        }
+        draw_attribution_text: {
+            color: #666666
+            text_style: <THEME_FONT_REGULAR> {
+                font_size: 9.0
+            }
+        }
     }
 
     pub GeoMapView = <GeoMapViewBase> {
@@ -88,6 +97,11 @@ pub struct GeoMapView {
     #[live] draw_scale_bg: DrawColor,
     #[live] draw_scale_text: DrawText,
     #[live(true)] pub show_scale_bar: bool,
+
+    // Attribution overlay
+    #[live] draw_attribution_bg: DrawColor,
+    #[live] draw_attribution_text: DrawText,
+    #[live(true)] pub show_attribution: bool,
 
     // Map state (in geo coordinates)
     // Default to San Francisco at zoom 12
@@ -398,6 +412,37 @@ impl Widget for GeoMapView {
             // Draw label above the bar
             let text_y = bar_y - 14.0; // Position text above the bar
             self.draw_scale_text.draw_abs(cx, dvec2(bar_x, text_y), &label);
+        }
+
+        // Draw attribution overlay if enabled
+        if self.show_attribution {
+            let attribution_text = "\u{00A9} OpenStreetMap \u{00A9} CARTO";
+            let margin = 10.0;
+            let padding = 4.0;
+
+            // Estimate text dimensions based on font size and character count
+            // Using approximate character width of 0.5 * font_size for small text
+            let font_size = self.draw_attribution_text.text_style.font_size as f64;
+            let char_count = attribution_text.chars().count() as f64;
+            let text_width = char_count * font_size * 0.5;
+            let text_height = font_size * 1.2; // Line height
+
+            // Position: bottom-right with margin
+            let bg_width = text_width + padding * 2.0;
+            let bg_height = text_height + padding * 2.0;
+            let bg_x = rect.pos.x + rect.size.x - margin - bg_width;
+            let bg_y = rect.pos.y + rect.size.y - margin - bg_height;
+
+            // Draw semi-transparent white background behind text
+            self.draw_attribution_bg.draw_abs(cx, Rect {
+                pos: dvec2(bg_x, bg_y),
+                size: dvec2(bg_width, bg_height),
+            });
+
+            // Draw small gray text (positioned inside the background with padding)
+            let text_x = bg_x + padding;
+            let text_y = bg_y + padding;
+            self.draw_attribution_text.draw_abs(cx, dvec2(text_x, text_y), attribution_text);
         }
 
         // End turtle and set area for hit detection
