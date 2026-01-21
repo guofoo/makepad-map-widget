@@ -1,26 +1,27 @@
 use makepad_widgets::*;
 use crate::tiles::{TileCache, TileCoord};
+use std::time::Instant;
 
 live_design! {
     link widgets;
     use link::shaders::*;
     use link::widgets::*;
 
-    // Simple shader for rendering a single tile
+    // Shader for rendering map tiles with UV offset/scale for parent tile fallback
     DrawMapTile = {{DrawMapTile}} {
         texture tile_texture: texture2d
         has_texture: 0.0
+        uv_offset: vec2(0.0, 0.0)
+        uv_scale: vec2(1.0, 1.0)
 
         fn pixel(self) -> vec4 {
             if self.has_texture > 0.5 {
-                return sample2d(self.tile_texture, self.pos)
+                // Sample with UV offset and scale (for parent tile fallback)
+                let uv = self.uv_offset + self.pos * self.uv_scale;
+                return sample2d(self.tile_texture, uv)
             }
-            // Loading placeholder - light gray with grid
-            let grid = fract(self.pos * 4.0)
-            if grid.x < 0.05 || grid.y < 0.05 {
-                return vec4(0.8, 0.8, 0.85, 1.0)
-            }
-            return vec4(0.92, 0.92, 0.92, 1.0)
+            // Loading placeholder - very subtle light gray
+            return vec4(0.95, 0.95, 0.95, 1.0)
         }
     }
 
@@ -37,6 +38,8 @@ live_design! {
 pub struct DrawMapTile {
     #[deref] pub draw_super: DrawQuad,
     #[live] pub has_texture: f32,
+    #[live] pub uv_offset: Vec2,
+    #[live] pub uv_scale: Vec2,
 }
 
 #[derive(Clone, Debug, DefaultNone)]
@@ -87,6 +90,16 @@ pub struct GeoMapView {
     #[rust] initial_pinch_distance: Option<f64>,
     #[rust] pinch_zoom_start: Option<f64>,
 
+    // Momentum scrolling state
+    #[rust] velocity_samples: Vec<(DVec2, f64)>,  // (position, time in seconds)
+    #[rust] flick_velocity: DVec2,
+    #[rust] next_frame: NextFrame,
+    #[rust] is_flicking: bool,
+
+    // Momentum tunable parameters
+    #[live(0.95)] pub momentum_decay: f64,
+    #[live(0.5)] pub momentum_threshold: f64,
+
     // Tile loading
     #[rust] tile_cache: TileCache,
 }
@@ -110,6 +123,13 @@ impl Widget for GeoMapView {
                     }
                     _ => {}
                 }
+            }
+        }
+
+        // Handle momentum animation frames
+        if self.next_frame.is_event(event).is_some() {
+            if self.is_flicking {
+                self.apply_momentum(cx, uid, &scope.path);
             }
         }
 
@@ -153,6 +173,12 @@ impl Widget for GeoMapView {
                 self.drag_start = Some(fe.abs);
                 self.drag_start_center = Some((self.center_lng, self.center_lat));
                 self.last_abs = fe.abs;
+
+                // Stop any ongoing flick and start collecting velocity samples
+                self.is_flicking = false;
+                self.velocity_samples.clear();
+                let time = Instant::now().elapsed().as_secs_f64();
+                self.velocity_samples.push((fe.abs, time));
             }
             Hit::FingerMove(fe) => {
                 // Only handle panning if not pinching
@@ -180,6 +206,13 @@ impl Widget for GeoMapView {
 
                         self.last_abs = fe.abs;
                         self.draw_tile.redraw(cx);
+
+                        // Add velocity sample (keep last 4)
+                        let time = Instant::now().elapsed().as_secs_f64();
+                        self.velocity_samples.push((fe.abs, time));
+                        if self.velocity_samples.len() > 4 {
+                            self.velocity_samples.remove(0);
+                        }
                     }
                 }
             }
@@ -198,8 +231,19 @@ impl Widget for GeoMapView {
                     self.draw_tile.redraw(cx);
                     self.emit_region_changed(cx, uid, &scope.path);
                 }
+
+                // Calculate flick velocity from samples and start momentum if above threshold
+                let velocity = self.calculate_flick_velocity();
+                let speed = (velocity.x * velocity.x + velocity.y * velocity.y).sqrt();
+                if speed > self.momentum_threshold && self.initial_pinch_distance.is_none() {
+                    self.flick_velocity = velocity;
+                    self.is_flicking = true;
+                    self.next_frame = cx.new_next_frame();
+                }
+
                 self.drag_start = None;
                 self.drag_start_center = None;
+                self.velocity_samples.clear();
 
                 self.emit_region_changed(cx, uid, &scope.path);
             }
@@ -285,12 +329,28 @@ impl Widget for GeoMapView {
                     + (dy as f64 * scaled_tile_size)
                     - offset_y;
 
-                // Set up texture if available
+                // Set up texture - try current tile, then fall back to parent tiles
                 if let Some(texture) = self.tile_cache.get_tile(&coord) {
+                    // Use the exact tile
                     self.draw_tile.draw_vars.set_texture(0, texture);
                     self.draw_tile.has_texture = 1.0;
+                    self.draw_tile.uv_offset = Vec2 { x: 0.0, y: 0.0 };
+                    self.draw_tile.uv_scale = Vec2 { x: 1.0, y: 1.0 };
+                } else if let Some((parent_coord, uv_offset, uv_scale)) = self.find_parent_tile_coord(&coord) {
+                    // Use scaled parent tile as fallback
+                    if let Some(parent_texture) = self.tile_cache.get_tile(&parent_coord) {
+                        self.draw_tile.draw_vars.set_texture(0, parent_texture);
+                        self.draw_tile.has_texture = 1.0;
+                        self.draw_tile.uv_offset = uv_offset;
+                        self.draw_tile.uv_scale = uv_scale;
+                    } else {
+                        self.draw_tile.has_texture = 0.0;
+                    }
                 } else {
+                    // No tile available, show placeholder
                     self.draw_tile.has_texture = 0.0;
+                    self.draw_tile.uv_offset = Vec2 { x: 0.0, y: 0.0 };
+                    self.draw_tile.uv_scale = Vec2 { x: 1.0, y: 1.0 };
                 }
 
                 // Draw the tile
@@ -334,6 +394,125 @@ impl GeoMapView {
         let lat = lat_rad.to_degrees();
 
         (lng, lat)
+    }
+
+    /// Find a parent tile that can be used as fallback, returns (parent_coord, uv_offset, uv_scale)
+    fn find_parent_tile_coord(&self, coord: &TileCoord) -> Option<(TileCoord, Vec2, Vec2)> {
+        // Try parent tiles up to 4 zoom levels back
+        let mut x = coord.x;
+        let mut y = coord.y;
+        let mut z = coord.z;
+
+        for _ in 0..4 {
+            if z == 0 {
+                break;
+            }
+
+            // Move to parent coordinates
+            x /= 2;
+            y /= 2;
+            z -= 1;
+
+            let parent_coord = TileCoord { x, y, z };
+
+            if self.tile_cache.get_tile(&parent_coord).is_some() {
+                // Calculate UV offset and scale for the portion we need
+                let zoom_diff = coord.z - z;
+                let scale = 1.0 / (1 << zoom_diff) as f32;
+
+                // Calculate which portion of the parent tile our tile occupies
+                let offset_x = ((coord.x % (1 << zoom_diff)) as f32) * scale;
+                let offset_y = ((coord.y % (1 << zoom_diff)) as f32) * scale;
+
+                return Some((
+                    parent_coord,
+                    Vec2 { x: offset_x, y: offset_y },
+                    Vec2 { x: scale, y: scale },
+                ));
+            }
+        }
+        None
+    }
+
+    /// Calculate flick velocity from position/time samples
+    fn calculate_flick_velocity(&self) -> DVec2 {
+        if self.velocity_samples.len() < 2 {
+            return DVec2 { x: 0.0, y: 0.0 };
+        }
+
+        // Calculate velocity from the samples (pixels per second)
+        let mut total_velocity = DVec2 { x: 0.0, y: 0.0 };
+        let mut count = 0;
+
+        for i in 1..self.velocity_samples.len() {
+            let (pos_prev, time_prev) = self.velocity_samples[i - 1];
+            let (pos_curr, time_curr) = self.velocity_samples[i];
+
+            let dt = time_curr - time_prev;
+            if dt > 0.0001 {
+                // Avoid division by very small dt
+                let vx = (pos_curr.x - pos_prev.x) / dt;
+                let vy = (pos_curr.y - pos_prev.y) / dt;
+                total_velocity.x += vx;
+                total_velocity.y += vy;
+                count += 1;
+            }
+        }
+
+        if count > 0 {
+            // Average the velocities and scale down for reasonable flick behavior
+            // The scaling factor converts pixels/second to a usable per-frame velocity
+            let scale = 0.016; // ~60fps frame time
+            DVec2 {
+                x: (total_velocity.x / count as f64) * scale,
+                y: (total_velocity.y / count as f64) * scale,
+            }
+        } else {
+            DVec2 { x: 0.0, y: 0.0 }
+        }
+    }
+
+    /// Apply momentum decay and update map position
+    fn apply_momentum(&mut self, cx: &mut Cx, uid: WidgetUid, path: &HeapLiveIdPath) {
+        // Apply decay to velocity
+        self.flick_velocity.x *= self.momentum_decay;
+        self.flick_velocity.y *= self.momentum_decay;
+
+        // Check if velocity is below threshold
+        let speed = (self.flick_velocity.x * self.flick_velocity.x
+            + self.flick_velocity.y * self.flick_velocity.y)
+            .sqrt();
+
+        if speed < self.momentum_threshold * 0.01 {
+            // Stop flicking when velocity is very low
+            self.is_flicking = false;
+            self.emit_region_changed(cx, uid, path);
+            return;
+        }
+
+        // Convert pixel velocity to geo coordinate delta (same logic as FingerMove)
+        let world_size = TILE_SIZE * 2.0_f64.powf(self.zoom);
+        let degrees_per_pixel_x = 360.0 / world_size;
+        let lat_rad = self.center_lat.to_radians();
+        let degrees_per_pixel_y = degrees_per_pixel_x / lat_rad.cos();
+
+        // Apply velocity (note: negative because dragging right moves map left)
+        self.center_lng -= self.flick_velocity.x * degrees_per_pixel_x;
+        self.center_lat += self.flick_velocity.y * degrees_per_pixel_y;
+
+        // Clamp latitude to valid range
+        self.center_lat = self.center_lat.clamp(-85.0, 85.0);
+        // Wrap longitude
+        while self.center_lng > 180.0 {
+            self.center_lng -= 360.0;
+        }
+        while self.center_lng < -180.0 {
+            self.center_lng += 360.0;
+        }
+
+        // Redraw and schedule next frame
+        self.draw_tile.redraw(cx);
+        self.next_frame = cx.new_next_frame();
     }
 
     fn emit_region_changed(&self, cx: &mut Cx, uid: WidgetUid, path: &HeapLiveIdPath) {
