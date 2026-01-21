@@ -1,6 +1,5 @@
 use makepad_widgets::*;
 use crate::tiles::{TileCache, TileCoord};
-use std::time::Instant;
 
 live_design! {
     link widgets;
@@ -168,7 +167,7 @@ impl Widget for GeoMapView {
         }
 
         match event.hits(cx, self.draw_tile.area()) {
-            Hit::FingerDown(fe) => {
+            Hit::FingerDown(fe) if fe.is_primary_hit() => {
                 cx.set_key_focus(self.draw_tile.area());
                 self.drag_start = Some(fe.abs);
                 self.drag_start_center = Some((self.center_lng, self.center_lat));
@@ -177,8 +176,7 @@ impl Widget for GeoMapView {
                 // Stop any ongoing flick and start collecting velocity samples
                 self.is_flicking = false;
                 self.velocity_samples.clear();
-                let time = Instant::now().elapsed().as_secs_f64();
-                self.velocity_samples.push((fe.abs, time));
+                self.velocity_samples.push((fe.abs, fe.time));
             }
             Hit::FingerMove(fe) => {
                 // Only handle panning if not pinching
@@ -208,15 +206,14 @@ impl Widget for GeoMapView {
                         self.draw_tile.redraw(cx);
 
                         // Add velocity sample (keep last 4)
-                        let time = Instant::now().elapsed().as_secs_f64();
-                        self.velocity_samples.push((fe.abs, time));
+                        self.velocity_samples.push((fe.abs, fe.time));
                         if self.velocity_samples.len() > 4 {
                             self.velocity_samples.remove(0);
                         }
                     }
                 }
             }
-            Hit::FingerUp(fe) => {
+            Hit::FingerUp(fe) if fe.is_primary_hit() => {
                 // Reset pinch state
                 self.initial_pinch_distance = None;
                 self.pinch_zoom_start = None;
