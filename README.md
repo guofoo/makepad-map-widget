@@ -7,6 +7,7 @@ https://github.com/user-attachments/assets/a9e39a1d-2712-41e2-b93c-7482c98fac5b
 ## Features
 
 - Interactive map with pan and zoom
+- **Map markers** with customizable colors and labels
 - Momentum scrolling (iOS-like inertia after pan gestures)
 - Scroll wheel zoom (desktop)
 - Pinch-to-zoom (mobile/touch)
@@ -15,7 +16,7 @@ https://github.com/user-attachments/assets/a9e39a1d-2712-41e2-b93c-7482c98fac5b
 - Attribution overlay (configurable)
 - Configurable tile server (defaults to Carto Voyager)
 - Persistent disk caching (survives app restarts)
-- Event callbacks for taps, long presses, and region changes
+- Event callbacks for taps, long presses, marker taps, and region changes
 
 ## Installation
 
@@ -115,6 +116,53 @@ map.set_center(cx, -73.9857, 40.7484);  // New York
 map.set_zoom(cx, 15.0);
 ```
 
+### 5. Add markers to the map
+
+```rust
+let map = self.ui.geo_map_view(id!(my_map));
+
+// Add a simple marker (default red color)
+map.add_marker(cx, live_id!(my_marker), -122.4194, 37.7749);
+
+// Add a marker with custom color
+map.add_marker_with_color(
+    cx,
+    live_id!(blue_marker),
+    -122.4058, 37.8024,
+    vec4(0.2, 0.5, 0.9, 1.0)  // Blue
+);
+
+// Add a marker with label and color
+map.add_marker_with_label(
+    cx,
+    live_id!(golden_gate),
+    -122.4785, 37.8199,
+    "Golden Gate",
+    vec4(0.9, 0.2, 0.2, 1.0)  // Red
+);
+
+// Remove a marker
+map.remove_marker(cx, live_id!(my_marker));
+
+// Clear all markers
+map.clear_markers(cx);
+```
+
+### 6. Handle marker taps
+
+```rust
+fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions) {
+    let map = self.ui.geo_map_view(id!(my_map));
+
+    // Check if a marker was tapped
+    if let Some(marker_id) = map.marker_tapped(actions) {
+        if marker_id == live_id!(golden_gate) {
+            log!("Golden Gate marker tapped!");
+        }
+    }
+}
+```
+
 ## Configuration Options
 
 | Property | Type | Default | Description |
@@ -124,8 +172,7 @@ map.set_zoom(cx, 15.0);
 | `zoom` | f64 | 12.0 | Zoom level (1-19) |
 | `min_zoom` | f64 | 1.0 | Minimum allowed zoom |
 | `max_zoom` | f64 | 19.0 | Maximum allowed zoom |
-| `bearing` | f64 | 0.0 | Map rotation (not yet implemented) |
-| `pitch` | f64 | 0.0 | Map tilt (not yet implemented) |
+| `marker_size` | f64 | 32.0 | Size of map markers in pixels |
 | `momentum_decay` | f64 | 0.95 | Momentum decay rate (0-1, higher = longer glide) |
 | `momentum_threshold` | f64 | 0.5 | Minimum velocity to trigger momentum |
 | `show_scale_bar` | bool | true | Show/hide scale bar |
@@ -177,13 +224,13 @@ if let Some(mut inner) = map.borrow_mut() {
 
 ```bash
 # Desktop (macOS/Linux/Windows)
-cargo run -p makepad-map-example-simple
+cargo run -p makepad-map-example
 
 # Android
-cargo makepad android run -p makepad-map-example-simple
+cargo makepad android run -p makepad-map-example
 
 # iOS
-cargo makepad ios run -p makepad-map-example-simple
+cargo makepad ios run -p makepad-map-example
 ```
 
 ## Platform Support
