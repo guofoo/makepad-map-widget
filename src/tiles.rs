@@ -13,35 +13,7 @@ pub struct TileCoord {
 }
 
 impl TileCoord {
-    /// Convert latitude/longitude to tile coordinates at a given zoom level
-    pub fn from_lat_lng(lat: f64, lng: f64, zoom: u8) -> Self {
-        let n = 2_u32.pow(zoom as u32) as f64;
-        let x = ((lng + 180.0) / 360.0 * n).floor() as u32;
-        let lat_rad = lat.to_radians();
-        let y = ((1.0 - lat_rad.tan().asinh() / std::f64::consts::PI) / 2.0 * n).floor() as u32;
-        Self { x, y, z: zoom }
-    }
-
-    /// Get the northwest corner of this tile in lat/lng
-    pub fn to_lat_lng(&self) -> (f64, f64) {
-        let n = 2_u32.pow(self.z as u32) as f64;
-        let lng = self.x as f64 / n * 360.0 - 180.0;
-        let lat_rad = (std::f64::consts::PI * (1.0 - 2.0 * self.y as f64 / n)).sinh().atan();
-        let lat = lat_rad.to_degrees();
-        (lat, lng)
-    }
-
-    /// Get OSM tile URL
-    pub fn osm_url(&self) -> String {
-        // Using OSM tile server - note: for production use, you should use your own tile server
-        // or a provider like MapTiler, Stadia, etc.
-        format!(
-            "https://tile.openstreetmap.org/{}/{}/{}.png",
-            self.z, self.x, self.y
-        )
-    }
-
-    /// Get tile URL with custom server
+    /// Get tile URL from server template
     pub fn tile_url(&self, server: &str) -> String {
         server
             .replace("{z}", &self.z.to_string())
@@ -143,7 +115,7 @@ impl TileCache {
                             disk_cache::save_tile(&coord, body);
 
                             // Periodically check cache size (every 100 tiles saved)
-                            if self.request_counter % 100 == 0 {
+                            if self.request_counter.is_multiple_of(100) {
                                 disk_cache::evict_if_needed();
                             }
 
@@ -170,36 +142,6 @@ impl TileCache {
         if let Some(coord) = self.pending_requests.remove(&request_id) {
             self.tiles.insert(coord, TileState::Error(format!("{:?}", error)));
         }
-    }
-
-    /// Get tiles needed to cover a viewport
-    pub fn get_visible_tiles(
-        center_lat: f64,
-        center_lng: f64,
-        zoom: u8,
-        viewport_width: f64,
-        viewport_height: f64,
-    ) -> Vec<TileCoord> {
-        let tile_size = 256.0; // Standard OSM tile size in pixels
-
-        // Calculate how many tiles we need
-        let tiles_x = (viewport_width / tile_size).ceil() as i32 + 2;
-        let tiles_y = (viewport_height / tile_size).ceil() as i32 + 2;
-
-        let center_tile = TileCoord::from_lat_lng(center_lat, center_lng, zoom);
-        let max_tile = 2_u32.pow(zoom as u32);
-
-        let mut tiles = Vec::new();
-        for dy in -(tiles_y / 2)..=(tiles_y / 2) {
-            for dx in -(tiles_x / 2)..=(tiles_x / 2) {
-                let x = (center_tile.x as i32 + dx).rem_euclid(max_tile as i32) as u32;
-                let y = center_tile.y as i32 + dy;
-                if y >= 0 && y < max_tile as i32 {
-                    tiles.push(TileCoord { x, y: y as u32, z: zoom });
-                }
-            }
-        }
-        tiles
     }
 
     /// Clear all cached tiles (memory and disk)

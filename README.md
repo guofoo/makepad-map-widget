@@ -7,9 +7,12 @@ https://github.com/user-attachments/assets/a9e39a1d-2712-41e2-b93c-7482c98fac5b
 ## Features
 
 - Interactive map with pan and zoom
+- Momentum scrolling (iOS-like inertia after pan gestures)
 - Scroll wheel zoom (desktop)
 - Pinch-to-zoom (mobile/touch)
 - Double-tap to zoom in
+- Scale bar with automatic distance units
+- Attribution overlay (configurable)
 - Configurable tile server (defaults to Carto Voyager)
 - Persistent disk caching (survives app restarts)
 - Event callbacks for taps, long presses, and region changes
@@ -123,6 +126,10 @@ map.set_zoom(cx, 15.0);
 | `max_zoom` | f64 | 19.0 | Maximum allowed zoom |
 | `bearing` | f64 | 0.0 | Map rotation (not yet implemented) |
 | `pitch` | f64 | 0.0 | Map tilt (not yet implemented) |
+| `momentum_decay` | f64 | 0.95 | Momentum decay rate (0-1, higher = longer glide) |
+| `momentum_threshold` | f64 | 0.5 | Minimum velocity to trigger momentum |
+| `show_scale_bar` | bool | true | Show/hide scale bar |
+| `show_attribution` | bool | true | Show/hide attribution overlay |
 
 ## Custom Tile Server
 

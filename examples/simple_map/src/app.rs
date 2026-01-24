@@ -41,21 +41,28 @@ live_design! {
                         text: "Drag to pan, scroll/buttons to zoom"
                         draw_text: {
                             text_style: { font_size: 10.0 }
-                            color: #666
+                            color: #ccc
                         }
                     }
 
-                    // Map widget - defaults to San Francisco at zoom 12
-                    geo_map = <GeoMapView> {
+                    // Map container - takes available space minus status bar
+                    <View> {
                         width: Fill,
                         height: Fill,
+
+                        geo_map = <GeoMapView> {
+                            width: Fill,
+                            height: Fill,
+                        }
                     }
 
                     status_label = <Label> {
-                        text: "San Francisco - Zoom: 12"
+                        width: Fill,
+                        height: 24,
+                        text: "Tap on map or markers"
                         draw_text: {
-                            text_style: { font_size: 10.0 }
-                            color: #666
+                            text_style: { font_size: 12.0 }
+                            color: #fff
                         }
                     }
                 }
@@ -79,6 +86,25 @@ impl LiveRegister for App {
 }
 
 impl MatchEvent for App {
+    fn handle_startup(&mut self, cx: &mut Cx) {
+        // Add some markers to the map
+        let map_ref = self.ui.geo_map_view(ids!(geo_map));
+
+        // San Francisco landmarks with labels
+        map_ref.add_marker_with_label(
+            cx, live_id!(golden_gate), -122.4785, 37.8199,
+            "Golden Gate", vec4(0.9, 0.2, 0.2, 1.0)  // Red
+        );
+        map_ref.add_marker_with_label(
+            cx, live_id!(coit_tower), -122.4058, 37.8024,
+            "Coit Tower", vec4(0.2, 0.5, 0.9, 1.0)  // Blue
+        );
+        map_ref.add_marker_with_label(
+            cx, live_id!(ferry_building), -122.3935, 37.7956,
+            "Ferry Building", vec4(0.2, 0.8, 0.3, 1.0)  // Green
+        );
+    }
+
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions) {
         // Handle zoom in button
         if self.ui.button(ids!(zoom_in_btn)).clicked(actions) {
@@ -106,14 +132,33 @@ impl MatchEvent for App {
             }
         }
 
-        // Update status when map region changes
-        for action in actions {
-            if let GeoMapViewAction::RegionChanged { center_lng, center_lat, zoom } = action.cast() {
-                self.ui.label(ids!(status_label)).set_text(
-                    cx,
-                    &format!("Lat: {:.4}, Lng: {:.4}, Zoom: {:.1}", center_lat, center_lng, zoom)
-                );
-            }
+        // Handle map actions
+        let map = self.ui.geo_map_view(ids!(geo_map));
+
+        if let Some(id) = map.marker_tapped(actions) {
+            let name = if id == live_id!(golden_gate) {
+                "Golden Gate Bridge"
+            } else if id == live_id!(coit_tower) {
+                "Coit Tower"
+            } else if id == live_id!(ferry_building) {
+                "Ferry Building"
+            } else {
+                "Unknown marker"
+            };
+            self.ui.label(ids!(status_label)).set_text(
+                cx,
+                &format!("Tapped marker: {}", name)
+            );
+        } else if let Some((lng, lat)) = map.tapped(actions) {
+            self.ui.label(ids!(status_label)).set_text(
+                cx,
+                &format!("Tapped at: {:.4}, {:.4}", lat, lng)
+            );
+        } else if let Some((lng, lat, zoom)) = map.region_changed(actions) {
+            self.ui.label(ids!(status_label)).set_text(
+                cx,
+                &format!("Lat: {:.4}, Lng: {:.4}, Zoom: {:.1}", lat, lng, zoom)
+            );
         }
     }
 }

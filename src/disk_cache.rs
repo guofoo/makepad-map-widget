@@ -1,6 +1,5 @@
-use std::path::PathBuf;
 use std::fs;
-use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crate::tiles::TileCoord;
@@ -74,40 +73,17 @@ pub fn tile_path(coord: &TileCoord) -> Option<PathBuf> {
 }
 
 /// Save tile PNG data to disk
-/// Returns true if saved successfully
 pub fn save_tile(coord: &TileCoord, data: &[u8]) -> bool {
-    let Some(path) = tile_path(coord) else {
-        return false;
-    };
-
-    // Create parent directories
-    if let Some(parent) = path.parent() {
-        if fs::create_dir_all(parent).is_err() {
-            return false;
-        }
-    }
-
-    // Write the file
-    match fs::File::create(&path) {
-        Ok(mut file) => file.write_all(data).is_ok(),
-        Err(_) => false,
-    }
+    let Some(path) = tile_path(coord) else { return false };
+    path.parent()
+        .and_then(|p| fs::create_dir_all(p).ok())
+        .and_then(|_| fs::write(&path, data).ok())
+        .is_some()
 }
 
 /// Load tile PNG data from disk
-/// Returns None if not cached or read error
 pub fn load_tile(coord: &TileCoord) -> Option<Vec<u8>> {
-    let path = tile_path(coord)?;
-
-    if !path.exists() {
-        return None;
-    }
-
-    let mut file = fs::File::open(&path).ok()?;
-    let mut data = Vec::new();
-    file.read_to_end(&mut data).ok()?;
-
-    Some(data)
+    fs::read(tile_path(coord)?).ok()
 }
 
 /// Get total size of cache directory in bytes
@@ -125,18 +101,10 @@ pub fn cache_size() -> u64 {
 }
 
 fn calculate_dir_size(path: &PathBuf) -> u64 {
-    let mut size = 0;
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                size += calculate_dir_size(&path);
-            } else if let Ok(metadata) = entry.metadata() {
-                size += metadata.len();
-            }
-        }
-    }
-    size
+    fs::read_dir(path).into_iter().flatten().flatten().fold(0, |acc, entry| {
+        let p = entry.path();
+        acc + if p.is_dir() { calculate_dir_size(&p) } else { entry.metadata().map(|m| m.len()).unwrap_or(0) }
+    })
 }
 
 /// Evict oldest files until cache is under MAX_CACHE_SIZE

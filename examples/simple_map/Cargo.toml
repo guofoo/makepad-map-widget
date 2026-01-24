@@ -1,5 +1,5 @@
 [package]
-name = "makepad-map-example-simple"
+name = "makepad-map-example"
 version = "0.1.0"
 edition = "2021"
 description = "Simple map example for Makepad"
@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 path = "src/app.rs"
 
 [[bin]]
-name = "makepad-map-example-simple"
+name = "makepad-map-example"
 path = "src/main.rs"
 
 [dependencies]

@@ -405,7 +405,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "makepad-map-example-simple"
+name = "makepad-map-example"
 version = "0.1.0"
 dependencies = [
  "makepad-map",

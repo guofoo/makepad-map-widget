@@ -3,9 +3,9 @@ use crate::tiles::{TileCache, TileCoord};
 
 live_design! {
     link widgets;
+    use link::theme::*;
     use link::shaders::*;
     use link::widgets::*;
-    use link::theme::*;
 
     // Shader for rendering map tiles with UV offset/scale for parent tile fallback
     DrawMapTile = {{DrawMapTile}} {
@@ -20,8 +20,39 @@ live_design! {
                 let uv = self.uv_offset + self.pos * self.uv_scale;
                 return sample2d(self.tile_texture, uv)
             }
-            // Loading placeholder - very subtle light gray
+            // Loading placeholder - subtle light gray
             return vec4(0.95, 0.95, 0.95, 1.0)
+        }
+    }
+
+    // Shader for rendering map markers (pin/teardrop shape)
+    DrawMarker = {{DrawMarker}} {
+        marker_color: #ff3333
+
+        fn pixel(self) -> vec4 {
+            // Anchor at bottom point (the pin tip)
+            let pos = self.pos - vec2(0.5, 0.7);
+
+            // Teardrop: circle on top, point at bottom
+            let circle_center = vec2(0.0, 0.0);
+            let circle_radius = 0.3;
+
+            // Distance to circle
+            let d_circle = length(pos - circle_center) - circle_radius;
+
+            // Triangle/cone pointing down
+            let tip = vec2(0.0, 0.35);
+            let d_cone = dot(pos - tip, normalize(vec2(abs(pos.x), -0.5)));
+
+            // Combine: inside if either shape
+            let d = min(d_circle, d_cone);
+
+            if d < 0.0 {
+                // Add subtle highlight for depth
+                let highlight = smoothstep(0.0, -0.15, d_circle - 0.1);
+                return mix(self.marker_color, vec4(1.0, 1.0, 1.0, 1.0), highlight * 0.3);
+            }
+            return vec4(0.0);
         }
     }
 
@@ -31,7 +62,7 @@ live_design! {
         }
         draw_scale_text: {
             color: #333333
-            text_style: <THEME_FONT_REGULAR> {
+            text_style: {
                 font_size: 10.0
             }
         }
@@ -40,9 +71,18 @@ live_design! {
         }
         draw_attribution_text: {
             color: #666666
-            text_style: <THEME_FONT_REGULAR> {
+            text_style: {
                 font_size: 9.0
             }
+        }
+        draw_marker_label: {
+            color: #333333
+            text_style: <THEME_FONT_REGULAR> {
+                font_size: 11.0
+            }
+        }
+        draw_marker_label_bg: {
+            color: #ffffffee
         }
     }
 
@@ -61,6 +101,23 @@ pub struct DrawMapTile {
     #[live] pub uv_scale: Vec2,
 }
 
+#[derive(Live, LiveRegister, LiveHook)]
+#[repr(C)]
+pub struct DrawMarker {
+    #[deref] pub draw_super: DrawQuad,
+    #[live] pub marker_color: Vec4,
+}
+
+/// A marker that can be placed on the map at a geographic location
+#[derive(Clone, Debug)]
+pub struct MapMarker {
+    pub id: LiveId,
+    pub lng: f64,
+    pub lat: f64,
+    pub label: String,
+    pub color: Vec4,
+}
+
 #[derive(Clone, Debug, DefaultNone)]
 pub enum GeoMapViewAction {
     None,
@@ -76,6 +133,9 @@ pub enum GeoMapViewAction {
     LongPressed {
         lng: f64,
         lat: f64,
+    },
+    MarkerTapped {
+        id: LiveId,
     },
 }
 
@@ -103,13 +163,17 @@ pub struct GeoMapView {
     #[live] draw_attribution_text: DrawText,
     #[live(true)] pub show_attribution: bool,
 
-    // Map state (in geo coordinates)
-    // Default to San Francisco at zoom 12
+    // Markers
+    #[live] draw_marker: DrawMarker,
+    #[live] draw_marker_label: DrawText,
+    #[live] draw_marker_label_bg: DrawColor,
+    #[live(32.0)] pub marker_size: f64,
+    #[rust] markers: Vec<MapMarker>,
+
+    // Map state (default: San Francisco at zoom 12)
     #[live(-122.4194)] pub center_lng: f64,
     #[live(37.7749)] pub center_lat: f64,
     #[live(12.0)] pub zoom: f64,
-    #[live(0.0)] pub bearing: f64,
-    #[live(0.0)] pub pitch: f64,
 
     // Zoom constraints
     #[live(1.0)] pub min_zoom: f64,
@@ -120,6 +184,7 @@ pub struct GeoMapView {
     #[rust] drag_start_center: Option<(f64, f64)>,
     #[rust] last_abs: DVec2,
     #[rust] viewport_size: DVec2,
+    #[rust] viewport_pos: DVec2,  // Top-left position of viewport in absolute coords
 
     // Pinch zoom state
     #[rust] initial_pinch_distance: Option<f64>,
@@ -162,10 +227,8 @@ impl Widget for GeoMapView {
         }
 
         // Handle momentum animation frames
-        if self.next_frame.is_event(event).is_some() {
-            if self.is_flicking {
-                self.apply_momentum(cx, uid, &scope.path);
-            }
+        if self.next_frame.is_event(event).is_some() && self.is_flicking {
+            self.apply_momentum(cx, uid, &scope.path);
         }
 
         // Handle touch events for pinch zoom
@@ -219,24 +282,11 @@ impl Widget for GeoMapView {
                 if self.initial_pinch_distance.is_none() {
                     if let (Some(start), Some((start_lng, start_lat))) = (self.drag_start, self.drag_start_center) {
                         let delta = fe.abs - start;
+                        let (deg_per_px_x, deg_per_px_y) = self.degrees_per_pixel();
 
-                        // Convert pixel delta to geo coordinate delta
-                        // At zoom level z, the world is 256 * 2^z pixels wide
-                        let world_size = TILE_SIZE * 2.0_f64.powf(self.zoom);
-                        let degrees_per_pixel_x = 360.0 / world_size;
-
-                        // Latitude scaling (Mercator projection)
-                        let lat_rad = self.center_lat.to_radians();
-                        let degrees_per_pixel_y = degrees_per_pixel_x / lat_rad.cos();
-
-                        self.center_lng = start_lng - delta.x * degrees_per_pixel_x;
-                        self.center_lat = start_lat + delta.y * degrees_per_pixel_y;
-
-                        // Clamp latitude to valid range
-                        self.center_lat = self.center_lat.clamp(-85.0, 85.0);
-                        // Wrap longitude
-                        while self.center_lng > 180.0 { self.center_lng -= 360.0; }
-                        while self.center_lng < -180.0 { self.center_lng += 360.0; }
+                        self.center_lng = start_lng - delta.x * deg_per_px_x;
+                        self.center_lat = start_lat + delta.y * deg_per_px_y;
+                        self.normalize_coordinates();
 
                         self.last_abs = fe.abs;
                         self.draw_tile.redraw(cx);
@@ -250,35 +300,47 @@ impl Widget for GeoMapView {
                 }
             }
             Hit::FingerUp(fe) if fe.is_primary_hit() => {
-                // Reset pinch state
+                let was_pinching = self.initial_pinch_distance.is_some();
                 self.initial_pinch_distance = None;
                 self.pinch_zoom_start = None;
 
-                if fe.is_over && fe.tap_count == 1 && self.drag_start.is_some() {
-                    // Single tap - emit tap action
-                    let (lng, lat) = self.screen_to_geo(fe.abs);
-                    cx.widget_action(uid, &scope.path, GeoMapViewAction::Tapped { lng, lat });
+                // Check if this was a tap (minimal movement from start)
+                let is_tap = if let Some(start) = self.drag_start {
+                    let dist = (fe.abs - start).length();
+                    dist < 10.0  // Less than 10px movement = tap
+                } else {
+                    false
+                };
+
+                if fe.is_over && is_tap {
+                    // Check if a marker was tapped
+                    if let Some(marker_id) = self.find_marker_at_screen_pos(fe.abs) {
+                        cx.widget_action(uid, &scope.path, GeoMapViewAction::MarkerTapped { id: marker_id });
+                    } else {
+                        let (lng, lat) = self.screen_to_geo(fe.abs);
+                        cx.widget_action(uid, &scope.path, GeoMapViewAction::Tapped { lng, lat });
+                    }
                 } else if fe.is_over && fe.tap_count == 2 {
-                    // Double tap - zoom in
                     self.zoom = (self.zoom + 1.0).min(self.max_zoom);
                     self.draw_tile.redraw(cx);
-                    self.emit_region_changed(cx, uid, &scope.path);
                 }
 
-                // Calculate flick velocity from samples and start momentum if above threshold
-                let velocity = self.calculate_flick_velocity();
-                let speed = (velocity.x * velocity.x + velocity.y * velocity.y).sqrt();
-                if speed > self.momentum_threshold && self.initial_pinch_distance.is_none() {
-                    self.flick_velocity = velocity;
-                    self.is_flicking = true;
-                    self.next_frame = cx.new_next_frame();
+                // Start momentum scrolling if above threshold (only for drags, not taps)
+                if !is_tap && !was_pinching {
+                    let velocity = self.calculate_flick_velocity();
+                    if velocity.x.hypot(velocity.y) > self.momentum_threshold {
+                        self.flick_velocity = velocity;
+                        self.is_flicking = true;
+                        self.next_frame = cx.new_next_frame();
+                    }
                 }
 
                 self.drag_start = None;
                 self.drag_start_center = None;
                 self.velocity_samples.clear();
-
-                self.emit_region_changed(cx, uid, &scope.path);
+                if !is_tap {
+                    self.emit_region_changed(cx, uid, &scope.path);
+                }
             }
             Hit::FingerScroll(fe) => {
                 // Handle scroll wheel zoom (desktop)
@@ -303,7 +365,8 @@ impl Widget for GeoMapView {
         // Begin drawing and get the rect
         cx.begin_turtle(walk, Layout::default());
         let rect = cx.turtle().rect();
-        self.viewport_size = DVec2 { x: rect.size.x as f64, y: rect.size.y as f64 };
+        self.viewport_size = rect.size;
+        self.viewport_pos = rect.pos;
 
         // Calculate tile zoom level (integer zoom for tiles)
         let tile_zoom = self.zoom.floor() as u8;
@@ -388,10 +451,59 @@ impl Widget for GeoMapView {
 
                 // Draw the tile
                 let tile_rect = Rect {
-                    pos: DVec2 { x: rect.pos.x as f64 + tile_screen_x, y: rect.pos.y as f64 + tile_screen_y },
-                    size: DVec2 { x: scaled_tile_size, y: scaled_tile_size },
+                    pos: rect.pos + dvec2(tile_screen_x, tile_screen_y),
+                    size: dvec2(scaled_tile_size, scaled_tile_size),
                 };
                 self.draw_tile.draw_abs(cx, tile_rect);
+            }
+        }
+
+        // Draw markers - collect data first to avoid borrow issues
+        let marker_data: Vec<_> = self.markers.iter().map(|m| {
+            (self.geo_to_screen(m.lng, m.lat), m.color, m.label.clone())
+        }).collect();
+
+        for (screen_pos, color, label) in marker_data {
+            // Skip if marker is off-screen (with some margin for the marker size)
+            let margin = self.marker_size;
+            if screen_pos.x < -margin || screen_pos.x > self.viewport_size.x + margin
+                || screen_pos.y < -margin || screen_pos.y > self.viewport_size.y + margin
+            {
+                continue;
+            }
+
+            // Position marker so the point (bottom of pin) is at the geo location
+            // The shader anchors at pos (0.5, 0.7), so we offset accordingly
+            let marker_rect = Rect {
+                pos: rect.pos + dvec2(
+                    screen_pos.x - self.marker_size / 2.0,
+                    screen_pos.y - self.marker_size * 0.7,
+                ),
+                size: dvec2(self.marker_size, self.marker_size),
+            };
+
+            self.draw_marker.marker_color = color;
+            self.draw_marker.draw_abs(cx, marker_rect);
+
+            // Draw label below the marker if it has one
+            if !label.is_empty() {
+                let text_pos = rect.pos + dvec2(screen_pos.x, screen_pos.y + 8.0);
+
+                // Estimate text size for background
+                let font_size = self.draw_marker_label.text_style.font_size as f64;
+                let text_width = label.len() as f64 * font_size * 0.6;
+                let text_height = font_size * 1.3;
+                let padding = 3.0;
+
+                // Draw background centered under marker
+                let bg_rect = Rect {
+                    pos: dvec2(text_pos.x - text_width / 2.0 - padding, text_pos.y - padding),
+                    size: dvec2(text_width + padding * 2.0, text_height + padding * 2.0),
+                };
+                self.draw_marker_label_bg.draw_abs(cx, bg_rect);
+
+                // Draw text centered
+                self.draw_marker_label.draw_abs(cx, dvec2(text_pos.x - text_width / 2.0, text_pos.y), &label);
             }
         }
 
@@ -453,30 +565,93 @@ impl Widget for GeoMapView {
 }
 
 impl GeoMapView {
+    /// Clamp latitude and wrap longitude to valid ranges
+    fn normalize_coordinates(&mut self) {
+        self.center_lat = self.center_lat.clamp(-85.0, 85.0);
+        while self.center_lng > 180.0 { self.center_lng -= 360.0; }
+        while self.center_lng < -180.0 { self.center_lng += 360.0; }
+    }
+
+    /// Get degrees per pixel at current zoom and latitude
+    fn degrees_per_pixel(&self) -> (f64, f64) {
+        let world_size = TILE_SIZE * 2.0_f64.powf(self.zoom);
+        let deg_per_px_x = 360.0 / world_size;
+        let deg_per_px_y = deg_per_px_x / self.center_lat.to_radians().cos();
+        (deg_per_px_x, deg_per_px_y)
+    }
+
     /// Convert screen coordinates to geographic coordinates
     fn screen_to_geo(&self, screen_pos: DVec2) -> (f64, f64) {
         let tile_zoom = self.zoom.floor() as u8;
         let zoom_scale = 2.0_f64.powf(self.zoom - tile_zoom as f64);
         let world_size = TILE_SIZE * 2.0_f64.powf(tile_zoom as f64);
 
-        // Screen offset from center
-        let screen_offset_x = screen_pos.x - self.viewport_size.x / 2.0;
-        let screen_offset_y = screen_pos.y - self.viewport_size.y / 2.0;
-
-        // Convert to world coordinates
         let center_world_x = (self.center_lng + 180.0) / 360.0 * world_size;
         let lat_rad = self.center_lat.to_radians();
         let center_world_y = (1.0 - lat_rad.tan().asinh() / std::f64::consts::PI) / 2.0 * world_size;
 
-        let world_x = center_world_x + screen_offset_x / zoom_scale;
-        let world_y = center_world_y + screen_offset_y / zoom_scale;
+        let screen_offset = screen_pos - self.viewport_size / 2.0;
+        let world_x = center_world_x + screen_offset.x / zoom_scale;
+        let world_y = center_world_y + screen_offset.y / zoom_scale;
 
-        // Convert back to lat/lng
         let lng = world_x / world_size * 360.0 - 180.0;
         let lat_rad = (std::f64::consts::PI * (1.0 - 2.0 * world_y / world_size)).sinh().atan();
-        let lat = lat_rad.to_degrees();
+        (lng, lat_rad.to_degrees())
+    }
 
-        (lng, lat)
+    /// Convert geographic coordinates to screen coordinates (relative to viewport top-left)
+    fn geo_to_screen(&self, lng: f64, lat: f64) -> DVec2 {
+        let tile_zoom = self.zoom.floor() as u8;
+        let zoom_scale = 2.0_f64.powf(self.zoom - tile_zoom as f64);
+        let world_size = TILE_SIZE * 2.0_f64.powf(tile_zoom as f64);
+
+        // Convert center to world coords
+        let center_world_x = (self.center_lng + 180.0) / 360.0 * world_size;
+        let center_lat_rad = self.center_lat.to_radians();
+        let center_world_y = (1.0 - center_lat_rad.tan().asinh() / std::f64::consts::PI) / 2.0 * world_size;
+
+        // Convert target to world coords
+        let target_world_x = (lng + 180.0) / 360.0 * world_size;
+        let target_lat_rad = lat.to_radians();
+        let target_world_y = (1.0 - target_lat_rad.tan().asinh() / std::f64::consts::PI) / 2.0 * world_size;
+
+        // Calculate screen offset from center
+        let offset_x = (target_world_x - center_world_x) * zoom_scale;
+        let offset_y = (target_world_y - center_world_y) * zoom_scale;
+
+        // Return position relative to viewport top-left
+        dvec2(
+            self.viewport_size.x / 2.0 + offset_x,
+            self.viewport_size.y / 2.0 + offset_y,
+        )
+    }
+
+    /// Find the marker at a screen position (if any), checking in reverse order (topmost first)
+    /// screen_pos should be in absolute window coordinates (as received from events)
+    fn find_marker_at_screen_pos(&self, abs_pos: DVec2) -> Option<LiveId> {
+        // Convert absolute position to relative viewport position
+        let rel_pos = abs_pos - self.viewport_pos;
+
+        // Hit radius covers the marker shape - use full marker size for easier tapping
+        let hit_radius = self.marker_size * 0.6;
+
+        // Check markers in reverse order (last drawn = topmost = checked first)
+        for marker in self.markers.iter().rev() {
+            let marker_screen = self.geo_to_screen(marker.lng, marker.lat);
+
+            // The marker is drawn with the pin point at marker_screen, but the visible
+            // head is above that point. Check against the center of the visible marker.
+            let marker_center_y = marker_screen.y - self.marker_size * 0.35;
+
+            let dx = rel_pos.x - marker_screen.x;
+            let dy = rel_pos.y - marker_center_y;
+            let distance = (dx * dx + dy * dy).sqrt();
+
+            if distance <= hit_radius {
+                return Some(marker.id);
+            }
+        }
+        None
     }
 
     /// Find a parent tile that can be used as fallback, returns (parent_coord, uv_offset, uv_scale)
@@ -556,80 +731,46 @@ impl GeoMapView {
     /// Calculate flick velocity from position/time samples
     fn calculate_flick_velocity(&self) -> DVec2 {
         if self.velocity_samples.len() < 2 {
-            return DVec2 { x: 0.0, y: 0.0 };
+            return DVec2::default();
         }
 
-        // Calculate velocity from the samples (pixels per second)
-        let mut total_velocity = DVec2 { x: 0.0, y: 0.0 };
+        let mut total = DVec2::default();
         let mut count = 0;
 
-        for i in 1..self.velocity_samples.len() {
-            let (pos_prev, time_prev) = self.velocity_samples[i - 1];
-            let (pos_curr, time_curr) = self.velocity_samples[i];
-
+        for window in self.velocity_samples.windows(2) {
+            let (pos_prev, time_prev) = window[0];
+            let (pos_curr, time_curr) = window[1];
             let dt = time_curr - time_prev;
             if dt > 0.0001 {
-                // Avoid division by very small dt
-                let vx = (pos_curr.x - pos_prev.x) / dt;
-                let vy = (pos_curr.y - pos_prev.y) / dt;
-                total_velocity.x += vx;
-                total_velocity.y += vy;
+                total += (pos_curr - pos_prev) / dt;
                 count += 1;
             }
         }
 
         if count > 0 {
-            // Average the velocities and scale down for reasonable flick behavior
-            // The scaling factor converts pixels/second to a usable per-frame velocity
-            let scale = 0.016; // ~60fps frame time
-            DVec2 {
-                x: (total_velocity.x / count as f64) * scale,
-                y: (total_velocity.y / count as f64) * scale,
-            }
+            // Scale from pixels/second to per-frame velocity (~60fps)
+            total * (0.016 / count as f64)
         } else {
-            DVec2 { x: 0.0, y: 0.0 }
+            DVec2::default()
         }
     }
 
     /// Apply momentum decay and update map position
     fn apply_momentum(&mut self, cx: &mut Cx, uid: WidgetUid, path: &HeapLiveIdPath) {
-        // Apply decay to velocity
-        self.flick_velocity.x *= self.momentum_decay;
-        self.flick_velocity.y *= self.momentum_decay;
+        self.flick_velocity *= self.momentum_decay;
 
-        // Check if velocity is below threshold
-        let speed = (self.flick_velocity.x * self.flick_velocity.x
-            + self.flick_velocity.y * self.flick_velocity.y)
-            .sqrt();
-
+        let speed = self.flick_velocity.x.hypot(self.flick_velocity.y);
         if speed < self.momentum_threshold * 0.01 {
-            // Stop flicking when velocity is very low
             self.is_flicking = false;
             self.emit_region_changed(cx, uid, path);
             return;
         }
 
-        // Convert pixel velocity to geo coordinate delta (same logic as FingerMove)
-        let world_size = TILE_SIZE * 2.0_f64.powf(self.zoom);
-        let degrees_per_pixel_x = 360.0 / world_size;
-        let lat_rad = self.center_lat.to_radians();
-        let degrees_per_pixel_y = degrees_per_pixel_x / lat_rad.cos();
+        let (deg_per_px_x, deg_per_px_y) = self.degrees_per_pixel();
+        self.center_lng -= self.flick_velocity.x * deg_per_px_x;
+        self.center_lat += self.flick_velocity.y * deg_per_px_y;
+        self.normalize_coordinates();
 
-        // Apply velocity (note: negative because dragging right moves map left)
-        self.center_lng -= self.flick_velocity.x * degrees_per_pixel_x;
-        self.center_lat += self.flick_velocity.y * degrees_per_pixel_y;
-
-        // Clamp latitude to valid range
-        self.center_lat = self.center_lat.clamp(-85.0, 85.0);
-        // Wrap longitude
-        while self.center_lng > 180.0 {
-            self.center_lng -= 360.0;
-        }
-        while self.center_lng < -180.0 {
-            self.center_lng += 360.0;
-        }
-
-        // Redraw and schedule next frame
         self.draw_tile.redraw(cx);
         self.next_frame = cx.new_next_frame();
     }
@@ -658,6 +799,49 @@ impl GeoMapView {
         self.zoom = zoom.clamp(self.min_zoom, self.max_zoom);
         self.draw_tile.redraw(cx);
     }
+
+    /// Add a marker at the specified geographic coordinates
+    /// Returns a mutable reference to the marker for further customization
+    pub fn add_marker(&mut self, cx: &mut Cx, id: LiveId, lng: f64, lat: f64) -> &mut MapMarker {
+        // Default red color for markers
+        let marker = MapMarker {
+            id,
+            lng,
+            lat,
+            label: String::new(),
+            color: vec4(0.9, 0.2, 0.2, 1.0), // Default red
+        };
+        self.markers.push(marker);
+        self.draw_tile.redraw(cx);
+        self.markers.last_mut().unwrap()
+    }
+
+    /// Remove a marker by ID
+    pub fn remove_marker(&mut self, cx: &mut Cx, id: LiveId) {
+        self.markers.retain(|m| m.id != id);
+        self.draw_tile.redraw(cx);
+    }
+
+    /// Get a reference to a marker by ID
+    pub fn get_marker(&self, id: LiveId) -> Option<&MapMarker> {
+        self.markers.iter().find(|m| m.id == id)
+    }
+
+    /// Get a mutable reference to a marker by ID
+    pub fn get_marker_mut(&mut self, id: LiveId) -> Option<&mut MapMarker> {
+        self.markers.iter_mut().find(|m| m.id == id)
+    }
+
+    /// Remove all markers
+    pub fn clear_markers(&mut self, cx: &mut Cx) {
+        self.markers.clear();
+        self.draw_tile.redraw(cx);
+    }
+
+    /// Get the number of markers
+    pub fn marker_count(&self) -> usize {
+        self.markers.len()
+    }
 }
 
 impl GeoMapViewRef {
@@ -670,6 +854,80 @@ impl GeoMapViewRef {
     pub fn set_zoom(&self, cx: &mut Cx, zoom: f64) {
         if let Some(mut inner) = self.borrow_mut() {
             inner.set_zoom(cx, zoom);
+        }
+    }
+
+    /// Add a marker at the specified geographic coordinates
+    pub fn add_marker(&self, cx: &mut Cx, id: LiveId, lng: f64, lat: f64) {
+        if let Some(mut inner) = self.borrow_mut() {
+            inner.add_marker(cx, id, lng, lat);
+        }
+    }
+
+    /// Add a marker with a custom color
+    pub fn add_marker_with_color(&self, cx: &mut Cx, id: LiveId, lng: f64, lat: f64, color: Vec4) {
+        if let Some(mut inner) = self.borrow_mut() {
+            let marker = inner.add_marker(cx, id, lng, lat);
+            marker.color = color;
+        }
+    }
+
+    /// Add a marker with label and color
+    pub fn add_marker_with_label(&self, cx: &mut Cx, id: LiveId, lng: f64, lat: f64, label: &str, color: Vec4) {
+        if let Some(mut inner) = self.borrow_mut() {
+            let marker = inner.add_marker(cx, id, lng, lat);
+            marker.label = label.to_string();
+            marker.color = color;
+        }
+    }
+
+    /// Remove a marker by ID
+    pub fn remove_marker(&self, cx: &mut Cx, id: LiveId) {
+        if let Some(mut inner) = self.borrow_mut() {
+            inner.remove_marker(cx, id);
+        }
+    }
+
+    /// Remove all markers
+    pub fn clear_markers(&self, cx: &mut Cx) {
+        if let Some(mut inner) = self.borrow_mut() {
+            inner.clear_markers(cx);
+        }
+    }
+
+    /// Get the number of markers
+    pub fn marker_count(&self) -> usize {
+        if let Some(inner) = self.borrow() {
+            inner.marker_count()
+        } else {
+            0
+        }
+    }
+
+    /// Check if the map was tapped (returns coordinates if tapped)
+    pub fn tapped(&self, actions: &Actions) -> Option<(f64, f64)> {
+        if let GeoMapViewAction::Tapped { lng, lat } = actions.find_widget_action(self.widget_uid()).cast() {
+            Some((lng, lat))
+        } else {
+            None
+        }
+    }
+
+    /// Check if a marker was tapped (returns marker ID if tapped)
+    pub fn marker_tapped(&self, actions: &Actions) -> Option<LiveId> {
+        if let GeoMapViewAction::MarkerTapped { id } = actions.find_widget_action(self.widget_uid()).cast() {
+            Some(id)
+        } else {
+            None
+        }
+    }
+
+    /// Check if the map region changed (returns new center and zoom)
+    pub fn region_changed(&self, actions: &Actions) -> Option<(f64, f64, f64)> {
+        if let GeoMapViewAction::RegionChanged { center_lng, center_lat, zoom } = actions.find_widget_action(self.widget_uid()).cast() {
+            Some((center_lng, center_lat, zoom))
+        } else {
+            None
         }
     }
 }

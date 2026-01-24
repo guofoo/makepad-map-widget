@@ -2,193 +2,160 @@
 
 ## Overview
 
-A native map widget component for the Makepad UI framework. Uses a hybrid/texture approach with MapLibre as the rendering backend, enabling cross-platform support across all Makepad targets (iOS, Android, macOS, Windows, Linux, Web).
+A native map widget component for the Makepad UI framework. Uses raster tile rendering with OpenStreetMap-compatible tile servers, enabling cross-platform support across all Makepad targets (iOS, Android, macOS, Windows, Linux, Web).
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────┐
-│         Makepad Widget Layer        │  ← Markers, controls, overlays (Makepad DSL)
+│         Makepad Widget Layer        │  ← GeoMapView widget, overlays (scale bar, attribution)
 ├─────────────────────────────────────┤
-│         Texture Bridge Layer        │  ← Shares GPU texture between systems
+│         Tile Cache Layer            │  ← Memory + disk caching, HTTP tile fetching
 ├─────────────────────────────────────┤
-│         MapLibre Renderer           │  ← Handles tiles, styling, map logic
+│         GPU Texture Rendering       │  ← DrawMapTile shader, texture composition
 └─────────────────────────────────────┘
 ```
 
-### Why This Approach
+### Why Raster Tiles
 
-| Approach | Stability | Cross-platform | Effort |
-|----------|-----------|----------------|--------|
-| Custom vector renderer | Low initially | Excellent | Massive |
-| Native view embedding | High | Poor (no desktop/web SDK) | High |
-| **Hybrid/texture (chosen)** | Medium-High | Good | Medium |
+| Approach | Complexity | Cross-platform | Effort |
+|----------|------------|----------------|--------|
+| Custom vector renderer | High | Excellent | Massive |
+| Native view embedding | Low | Poor (no desktop/web SDK) | High |
+| MapLibre integration | Medium | Good | Medium |
+| **Raster tiles (chosen)** | Low | Excellent | Low |
 
-MapLibre was chosen because:
-- Open-source (BSD license), no API keys required
-- Renders via OpenGL, aligns with Makepad's GPU pipeline
-- Supports all Makepad platforms
-- Mature and battle-tested
-- Uses OpenStreetMap data
+Raster tiles were chosen because:
+- Simple HTTP-based tile fetching
+- Works on all platforms without native SDKs
+- Mature ecosystem (OpenStreetMap, CARTO, etc.)
+- No complex FFI bindings required
+- Immediate visual results
 
-## Platform-Specific Texture Sharing
+## Current Implementation
 
-### macOS/iOS (Metal)
-- MapLibre Native supports Metal rendering
-- Render to `MTLTexture` in offscreen `MTLRenderPassDescriptor`
-- Zero-copy sharing via `MTLSharedEvent` for synchronization
+### Core Modules
 
-### Android/Linux (OpenGL)
-- MapLibre renders to OpenGL Framebuffer Object (FBO)
-- Share texture via same GL context or `EGLImage` on Android
+- **`src/map_view.rs`** - `GeoMapView` widget
+  - `DrawMapTile` shader for GPU tile rendering
+  - Pan, zoom (scroll/pinch), double-tap gestures
+  - Momentum scrolling with configurable decay
+  - Scale bar overlay (10m to 1000km)
+  - Attribution overlay
+  - **Map markers** with labels (`DrawMarker` shader, `MapMarker` struct)
+  - Parent tile fallback for smooth zooming
 
-### Windows (DX11)
-- Use ANGLE (OpenGL-to-DX11 translation) for MapLibre
-- Or use `WGL_NV_DX_interop` for GL/DX texture sharing
+- **`src/tiles.rs`** - Tile management
+  - `TileCoord` - OSM slippy map coordinates (x, y, z)
+  - `TileCache` - Memory cache + HTTP fetching
+  - Web Mercator projection math
 
-### Web (WebGL)
-- MapLibre GL JS renders to offscreen `OffscreenCanvas`
-- Upload to Makepad's WebGL context via `texImage2D`
+- **`src/disk_cache.rs`** - Persistent storage
+  - Platform-specific cache directories
+  - LRU eviction (50MB limit)
+  - Three-tier caching: memory → disk → network
 
-## Widget API
+### Widget API
 
-### DSL Usage
+#### DSL Usage
 ```rust
-MapView {
-    center: (-122.4194, 37.7749),
+<GeoMapView> {
+    center_lng: -122.4194,  // San Francisco
+    center_lat: 37.7749,
     zoom: 12.0,
-    style: "https://demotiles.maplibre.org/style.json",
 
-    on_tap: |cx, lat_lng| { /* handle tap */ },
-    on_region_changed: |cx, bounds| { /* viewport changed */ },
+    // Optional customization
+    show_scale_bar: true,
+    show_attribution: true,
+    momentum_decay: 0.95,
 }
 ```
 
-### Properties
-- `center_lng: f64`, `center_lat: f64` — map center
-- `zoom: f64` — zoom level (0-22)
-- `bearing: f64` — rotation in degrees
-- `pitch: f64` — tilt angle (0-60)
-- `style_url: &str` — MapLibre style URL or JSON
+#### Properties
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `center_lng` | f64 | -122.4194 | Longitude of map center |
+| `center_lat` | f64 | 37.7749 | Latitude of map center |
+| `zoom` | f64 | 12.0 | Zoom level (1-19) |
+| `min_zoom` | f64 | 1.0 | Minimum allowed zoom |
+| `max_zoom` | f64 | 19.0 | Maximum allowed zoom |
+| `marker_size` | f64 | 32.0 | Size of map markers in pixels |
+| `momentum_decay` | f64 | 0.95 | Momentum decay rate (0-1) |
+| `momentum_threshold` | f64 | 0.5 | Minimum velocity for momentum |
+| `show_scale_bar` | bool | true | Show/hide scale bar |
+| `show_attribution` | bool | true | Show/hide attribution |
 
-### Methods (via `MapViewRef`)
-- `set_center(lng, lat, animated)`
-- `set_zoom(level, animated)`
-- `fit_bounds(bounds, padding)`
-- `add_marker(id, lng, lat, widget)`
-- `remove_marker(id)`
-- `project(lng, lat) -> (x, y)`
-- `unproject(x, y) -> (lng, lat)`
+#### Methods (via `GeoMapViewRef`)
+- `set_center(cx, lng, lat)` - Move map center
+- `set_zoom(cx, level)` - Set zoom level
+- `add_marker(cx, id, lng, lat)` - Add marker at location
+- `add_marker_with_color(cx, id, lng, lat, color)` - Add colored marker
+- `add_marker_with_label(cx, id, lng, lat, label, color)` - Add marker with label
+- `remove_marker(cx, id)` - Remove marker by ID
+- `clear_markers(cx)` - Remove all markers
+- `marker_count()` - Get number of markers
 
-### Events
-- `RegionChanged { center, zoom }`
-- `Tapped { lat, lng }`
-- `MarkerTapped { id }`
-- `LongPressed { lat, lng }`
+#### Events
+- `RegionChanged { center_lng, center_lat, zoom }` - Pan/zoom completed
+- `Tapped { lng, lat }` - Single tap on map
+- `LongPressed { lng, lat }` - Long press on map
+- `MarkerTapped { id }` - Marker was tapped
 
-## Input Handling
+### Input Handling
 
-| User Action | Makepad Event | MapLibre Command |
-|-------------|---------------|------------------|
-| Drag | `FingerMove` | `moveBy(dx, dy)` |
-| Pinch | Multi-touch delta | `zoomBy(scale, center)` |
-| Scroll wheel | `Scroll` | `zoomBy(delta, cursor)` |
-| Double tap | `FingerDoubleTap` | `zoomIn(at: point)` |
-| Single tap | `FingerUp` | `queryFeatures(at: point)` |
+| User Action | Makepad Event | Map Response |
+|-------------|---------------|--------------|
+| Drag | `FingerMove` | Pan map |
+| Release after drag | `FingerUp` | Momentum scroll |
+| Pinch | `TouchUpdate` | Zoom in/out |
+| Scroll wheel | `FingerScroll` | Zoom in/out |
+| Double tap | `FingerUp` (tap_count=2) | Zoom in |
+| Tap on marker | `FingerUp` | Emit `MarkerTapped` |
+| Tap on map | `FingerUp` | Emit `Tapped` |
+| Long press | `FingerLongPress` | Emit `LongPressed` |
 
-## Widget Structure
+## Platform Support
 
-```rust
-#[derive(Live, LiveHook, Widget)]
-pub struct MapView {
-    #[walk] walk: Walk,
-    #[redraw] #[live] draw_bg: DrawMapTexture,
-    #[animator] animator: Animator,
+| Platform | Status | Notes |
+|----------|--------|-------|
+| macOS | ✅ Working | Full support |
+| Linux | ✅ Working | Full support |
+| Windows | ✅ Working | Full support |
+| iOS | ✅ Working | Full support |
+| Android | ✅ Working | Full support |
+| Web | 🔶 Experimental | Needs testing |
 
-    #[live] center_lng: f64,
-    #[live] center_lat: f64,
-    #[live(12.0)] zoom: f64,
-    #[live(0.0)] bearing: f64,
-    #[live(0.0)] pitch: f64,
-    #[live] style_url: LiveDependency,
+## Tile Caching
 
-    #[rust] map_texture: Option<Texture>,
-    #[rust] maplibre: Option<MapLibreInstance>,
-    #[rust] gesture_state: GestureState,
-    #[rust] is_animating: bool,
-}
+Three-tier cache with automatic eviction:
 
-#[derive(Clone, Debug, DefaultNone)]
-pub enum MapViewAction {
-    None,
-    RegionChanged { center: (f64, f64), zoom: f64 },
-    Tapped { lat: f64, lng: f64 },
-    MarkerTapped { id: LiveId },
-    LongPressed { lat: f64, lng: f64 },
-}
-```
+1. **Memory Cache** - HashMap of loaded textures
+2. **Disk Cache** - Platform-specific directories (50MB limit)
+3. **Network** - HTTP fetch from tile server
 
-## Crate Structure
+### Cache Locations
 
-```
-makepad-map/
-├── Cargo.toml
-├── src/
-│   ├── lib.rs              # Re-exports
-│   ├── map_view.rs         # Makepad widget
-│   └── maplibre/
-│       ├── mod.rs          # Platform dispatch
-│       ├── ffi.rs          # C FFI bindings
-│       ├── instance.rs     # Safe Rust wrapper
-│       ├── native/         # iOS, Android, macOS, Linux, Windows
-│       └── web/            # WASM/JS interop
-├── examples/
-│   └── simple_map.rs       # Test application
-└── docs/
-    └── plans/
-```
+| Platform | Directory |
+|----------|-----------|
+| macOS | `~/Library/Caches/makepad-map/tiles/` |
+| Linux | `~/.cache/makepad-map/tiles/` |
+| Windows | `%LOCALAPPDATA%/makepad-map/cache/tiles/` |
+| iOS | `~/Library/Caches/makepad-map/tiles/` |
+| Android | `$CACHE_DIR/makepad-map/tiles/` |
 
-## Implementation Phases
+## Future Enhancements
 
-### Phase 1: Static Texture (Current)
-- Widget renders a placeholder or static map image
-- Validates Makepad widget integration
-- No MapLibre dependency yet
-
-### Phase 2: Gesture Handling
-- Add pan/zoom gestures that update internal state
-- Visual feedback (could pan a static image)
-
-### Phase 3: Raster Tile Loading
-- Load OSM raster tiles via HTTP
-- Stitch tiles into texture based on viewport
-- Basic map functionality without MapLibre
-
-### Phase 4: MapLibre Integration
-- FFI bindings to MapLibre Native
-- Replace tile loading with full MapLibre rendering
-- Vector tiles, styling, labels
-
-### Phase 5: Full Features
-- Markers as Makepad widgets
-- Polylines, polygons
-- Offline support
-- Web platform support
-
-## Dependencies
-
-```toml
-[dependencies]
-makepad-widgets = { path = "../makepad/widgets" }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
-```
+- [ ] Map rotation (bearing)
+- [ ] Map tilt (pitch)
+- [x] ~~Custom markers as Makepad widgets~~ → Implemented with `DrawMarker` shader and labels
+- [ ] Polylines and polygons
+- [ ] Vector tiles (MapLibre integration)
+- [ ] Offline map packages
+- [ ] Gesture animations (animated zoom/pan)
 
 ## References
 
-- [MapLibre Native](https://github.com/mapbox/mapbox-gl-native)
-- [MapLibre GL JS](https://maplibre.org/maplibre-gl-js/docs/)
-- [Makepad Widgets](https://github.com/makepad/makepad/tree/main/widgets)
-- [OpenMapTiles](https://openmaptiles.org/)
+- [OpenStreetMap Tile Usage Policy](https://operations.osmfoundation.org/policies/tiles/)
+- [CARTO Basemaps](https://carto.com/basemaps/)
+- [Slippy Map Tilenames](https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames)
+- [Web Mercator Projection](https://en.wikipedia.org/wiki/Web_Mercator_projection)
