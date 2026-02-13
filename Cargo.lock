@@ -548,24 +548,28 @@ dependencies = [
 
 [[package]]
 name = "makepad-zune-core"
-version = "0.2.14"
+version = "0.5.1"
+
+[[package]]
+name = "makepad-zune-inflate"
+version = "0.2.0"
 dependencies = [
- "bitflags 2.10.0",
+ "simd-adler32",
 ]
 
 [[package]]
 name = "makepad-zune-jpeg"
-version = "0.3.17"
+version = "0.5.12"
 dependencies = [
  "makepad-zune-core",
 ]
 
 [[package]]
 name = "makepad-zune-png"
-version = "0.4.10"
+version = "0.5.1"
 dependencies = [
- "zune-core",
- "zune-inflate",
+ "makepad-zune-core",
+ "makepad-zune-inflate",
 ]
 
 [[package]]
@@ -1183,18 +1187,3 @@ name = "xmlwriter"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
-
-[[package]]
-name = "zune-core"
-version = "0.4.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f423a2c17029964870cfaabb1f13dfab7d092a62a29a89264f4d36990ca414a"
-
-[[package]]
-name = "zune-inflate"
-version = "0.2.54"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73ab332fe2f6680068f3582b16a24f90ad7096d5d39b974d1c0aff0125116f02"
-dependencies = [
- "simd-adler32",
-]

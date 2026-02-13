@@ -14,13 +14,21 @@ live_design! {
                 window: { title: "Makepad Map - San Francisco" },
                 body = <View> {
                     flow: Down,
-                    padding: 10,
-                    spacing: 10,
 
-                    <Label> {
-                        text: "Makepad Map Widget"
-                        draw_text: {
-                            text_style: { font_size: 16.0 }
+                    // Title bar
+                    <View> {
+                        width: Fill, height: 50.0
+                        show_bg: true
+                        draw_bg: { color: #2196F3 }
+                        align: { x: 0.5, y: 0.5 }
+
+                        <Label> {
+                            width: Fit, height: Fit
+                            draw_text: {
+                                text_style: { font_size: 18.0 }
+                                color: #ffffff
+                            }
+                            text: "Makepad Map"
                         }
                     }
 
@@ -28,7 +36,18 @@ live_design! {
                         height: Fit,
                         flow: Right,
                         spacing: 10,
+                        padding: { top: 6, bottom: 6, left: 10, right: 10 },
+                        align: { y: 0.5 }
 
+                        status_label = <Label> {
+                            width: Fill,
+                            height: Fit,
+                            text: "Tap on map or markers"
+                            draw_text: {
+                                text_style: { font_size: 12.0 }
+                                color: #fff
+                            }
+                        }
                         zoom_in_btn = <Button> {
                             text: "Zoom In (+)"
                         }
@@ -37,15 +56,7 @@ live_design! {
                         }
                     }
 
-                    <Label> {
-                        text: "Drag to pan, scroll/buttons to zoom"
-                        draw_text: {
-                            text_style: { font_size: 10.0 }
-                            color: #ccc
-                        }
-                    }
-
-                    // Map container - takes available space minus status bar
+                    // Map container - takes available space
                     <View> {
                         width: Fill,
                         height: Fill,
@@ -53,16 +64,6 @@ live_design! {
                         geo_map = <GeoMapView> {
                             width: Fill,
                             height: Fill,
-                        }
-                    }
-
-                    status_label = <Label> {
-                        width: Fill,
-                        height: 24,
-                        text: "Tap on map or markers"
-                        draw_text: {
-                            text_style: { font_size: 12.0 }
-                            color: #fff
                         }
                     }
                 }
